@@ -8,8 +8,11 @@ import {
   DeliveryTrackingEvent,
   DeliveryPerson,
   InventoryLog,
-  InvoiceItem
+  InvoiceItem,
+  HardwareProduct,
+  SoftwareProduct
 } from '@/types';
+import { toast } from '@/hooks/use-toast';
 import { 
   mockProducts, 
   mockQuotations, 
@@ -107,6 +110,9 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
   const getProductByCode = (code: string) => products.find(p => p.productCode === code);
   const getProductByBarcode = (barcode: string) => products.find(p => p.barcode === barcode);
 
+  // Low-stock threshold
+  const LOW_STOCK_THRESHOLD = 5;
+
   // Inventory functions
   const updateInventory = (
     productId: string, 
@@ -119,11 +125,34 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
     const product = getProduct(productId);
     if (!product) return;
 
+    const currentQty = product.type === 'hardware'
+      ? (product as HardwareProduct).stockQuantity
+      : (product as SoftwareProduct).licenseQuantity;
+    const newQty = currentQty + change;
+
     // Update product stock
     if (product.type === 'hardware') {
-      updateProduct(productId, { stockQuantity: (product as any).stockQuantity + change });
+      updateProduct(productId, { stockQuantity: newQty });
     } else {
-      updateProduct(productId, { licenseQuantity: (product as any).licenseQuantity + change });
+      updateProduct(productId, { licenseQuantity: newQty });
+    }
+
+    // Low-stock & out-of-stock alerts on any reduction
+    if (change < 0) {
+      const label = product.type === 'hardware' ? 'units' : 'licenses';
+      if (newQty <= 0) {
+        toast({
+          title: '⚠️ Out of Stock!',
+          description: `"${product.name}" (${product.productCode}) has reached 0 ${label}. Restock immediately.`,
+          variant: 'destructive',
+        });
+      } else if (newQty <= LOW_STOCK_THRESHOLD) {
+        toast({
+          title: '⚠️ Low Stock Alert',
+          description: `"${product.name}" (${product.productCode}) is running low — only ${newQty} ${label} remaining.`,
+          variant: 'destructive',
+        });
+      }
     }
 
     // Add log entry
@@ -196,6 +225,18 @@ export const DataProvider: React.FC<DataProviderProps> = ({ children }) => {
 
     setInvoices(prev => [...prev, newInvoice]);
     updateQuotation(quotationId, { status: 'converted' });
+
+    // Reduce inventory for each item in the quotation
+    quotation.items.forEach(item => {
+      updateInventory(
+        item.productId,
+        -item.quantity,
+        'sale',
+        quotation.createdBy,
+        'System',
+        `Invoice ${newInvoice.invoiceNumber} (from quotation ${quotation.quotationNumber})`
+      );
+    });
 
     return newInvoice;
   };
